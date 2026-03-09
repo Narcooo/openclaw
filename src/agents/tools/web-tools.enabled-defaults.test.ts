@@ -162,6 +162,31 @@ function createProviderSuccessPayload(
   };
 }
 
+function installOpenAiSseFetch() {
+  const body = [
+    "event: response.created",
+    'data: {"type":"response.created"}',
+    "",
+    "event: response.output_item.done",
+    'data: {"type":"response.output_item.done","item":{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[{"type":"url_citation","url":"https://example.com/openai"}]}]}}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","response":{"status":"completed"}}',
+    "",
+  ].join("\n");
+
+  const mockFetch = vi.fn(() =>
+    Promise.resolve(
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ),
+  );
+  global.fetch = withFetchPreconnect(mockFetch);
+  return mockFetch;
+}
+
 describe("web tools defaults", () => {
   it("enables web_fetch by default (non-sandbox)", () => {
     const tool = createWebFetchTool({ config: {}, sandboxed: false });
@@ -334,6 +359,26 @@ describe("web_search openai provider", () => {
       provider: "openai",
       model: "gpt-5.1-codex-mini",
       tool: "web_search",
+      citations: ["https://example.com/openai"],
+    });
+    expect(result?.content[0]?.text).toContain("ok");
+  });
+
+  it("parses SSE responses from OpenAI-compatible proxies", async () => {
+    const mockFetch = installOpenAiSseFetch();
+    const tool = createOpenAiSearchTool({
+      apiKey: "openai-config-key", // pragma: allowlist secret
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-5.1-codex-mini",
+      tool: "web_search",
+      includeSources: false,
+    });
+
+    const result = await tool?.execute?.("call-1", { query: "test openai search" });
+
+    expect(mockFetch).toHaveBeenCalled();
+    expect(result?.details).toMatchObject({
+      provider: "openai",
       citations: ["https://example.com/openai"],
     });
     expect(result?.content[0]?.text).toContain("ok");

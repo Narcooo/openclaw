@@ -407,6 +407,88 @@ function extractResponsesSearchSources(data: GrokSearchResponse): string[] {
   return [...new Set(sources)];
 }
 
+function parseResponsesEventStreamBody(body: string): GrokSearchResponse {
+  const output: NonNullable<GrokSearchResponse["output"]> = [];
+  let completedOutput: GrokSearchResponse["output"] | undefined;
+
+  for (const block of body.split(/\r?\n\r?\n/)) {
+    if (!block.trim()) {
+      continue;
+    }
+
+    let eventType = "";
+    const dataLines: string[] = [];
+    for (const rawLine of block.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) {
+        continue;
+      }
+      if (line.startsWith("event:")) {
+        eventType = line.slice("event:".length).trim();
+        continue;
+      }
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length).trimStart());
+      }
+    }
+
+    if (!eventType || dataLines.length === 0) {
+      continue;
+    }
+
+    const payloadText = dataLines.join("\n");
+    if (!payloadText || payloadText === "[DONE]") {
+      continue;
+    }
+
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(payloadText) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (
+      eventType === "response.output_item.done" &&
+      "item" in payload &&
+      payload.item &&
+      typeof payload.item === "object"
+    ) {
+      output.push(payload.item as NonNullable<GrokSearchResponse["output"]>[number]);
+      continue;
+    }
+
+    if (
+      eventType === "response.completed" &&
+      "response" in payload &&
+      payload.response &&
+      typeof payload.response === "object"
+    ) {
+      const response = payload.response as { output?: GrokSearchResponse["output"] };
+      if (Array.isArray(response.output)) {
+        completedOutput = response.output;
+      }
+    }
+  }
+
+  return { output: completedOutput ?? output };
+}
+
+async function readOpenAiSearchResponse(res: Response): Promise<GrokSearchResponse> {
+  const contentType =
+    res.headers && typeof res.headers.get === "function"
+      ? (res.headers.get("content-type")?.toLowerCase() ?? "")
+      : "";
+  if (typeof res.text === "function") {
+    const body = await res.text();
+    if (contentType.includes("text/event-stream") || body.trimStart().startsWith("event:")) {
+      return parseResponsesEventStreamBody(body);
+    }
+    return JSON.parse(body) as GrokSearchResponse;
+  }
+  return (await res.json()) as GrokSearchResponse;
+}
+
 type GeminiConfig = {
   apiKey?: string;
   model?: string;
@@ -1199,7 +1281,7 @@ async function runOpenAiSearch(params: {
         return await throwWebSearchApiError(res, "OpenAI");
       }
 
-      const data = (await res.json()) as GrokSearchResponse;
+      const data = await readOpenAiSearchResponse(res);
       const { text: extractedText, annotationCitations } = extractGrokContent(data);
       const citations = [...new Set([...(data.citations ?? []), ...annotationCitations])];
       return {
