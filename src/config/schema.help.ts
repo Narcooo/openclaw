@@ -645,7 +645,7 @@ export const FIELD_HELP: Record<string, string> = {
   "tools.message.broadcast.enabled": "Enable broadcast action (default: true).",
   "tools.web.search.enabled": "Enable the web_search tool (requires a provider API key).",
   "tools.web.search.provider":
-    'Search provider ("brave", "perplexity", "grok", "gemini", or "kimi"). Auto-detected from available API keys if omitted.',
+    'Search provider ("brave", "perplexity", "grok", "gemini", "kimi", or "openai"). Auto-detected from available API keys if omitted.',
   "tools.web.search.apiKey": "Brave Search API key (fallback: BRAVE_API_KEY env var).",
   "tools.web.search.maxResults": "Default number of results to return (1-10).",
   "tools.web.search.timeoutSeconds": "Timeout in seconds for web_search requests.",
@@ -660,6 +660,14 @@ export const FIELD_HELP: Record<string, string> = {
   "tools.web.search.kimi.baseUrl":
     'Kimi base URL override (default: "https://api.moonshot.ai/v1").',
   "tools.web.search.kimi.model": 'Kimi model override (default: "moonshot-v1-128k").',
+  "tools.web.search.openai.apiKey": "OpenAI API key (fallback: OPENAI_API_KEY env var).", // pragma: allowlist secret
+  "tools.web.search.openai.baseUrl":
+    'OpenAI-compatible base URL override (default: "https://api.openai.com/v1").',
+  "tools.web.search.openai.model": 'OpenAI model override (default: "gpt-5").',
+  "tools.web.search.openai.tool":
+    'Responses web search tool type (default: "web_search"). Use "web_search_preview" only for legacy-compatible upstreams.',
+  "tools.web.search.openai.includeSources":
+    "Include `web_search_call.action.sources` in the Responses API output (default: false).",
   "tools.web.search.perplexity.apiKey":
     "Perplexity or OpenRouter API key (fallback: PERPLEXITY_API_KEY or OPENROUTER_API_KEY env var).",
   "tools.web.search.perplexity.baseUrl":

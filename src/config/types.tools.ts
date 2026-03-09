@@ -441,8 +441,8 @@ export type ToolsConfig = {
     search?: {
       /** Enable web search tool (default: true when API key is present). */
       enabled?: boolean;
-      /** Search provider ("brave", "perplexity", "grok", "gemini", or "kimi"). */
-      provider?: "brave" | "perplexity" | "grok" | "gemini" | "kimi";
+      /** Search provider ("brave", "perplexity", "grok", "gemini", "kimi", or "openai"). */
+      provider?: "brave" | "perplexity" | "grok" | "gemini" | "kimi" | "openai";
       /** Brave Search API key (optional; defaults to BRAVE_API_KEY env var). */
       apiKey?: SecretInput;
       /** Default search results count (1-10). */
@@ -484,6 +484,19 @@ export type ToolsConfig = {
         baseUrl?: string;
         /** Model to use (defaults to "moonshot-v1-128k"). */
         model?: string;
+      };
+      /** OpenAI Responses-specific configuration (used when provider="openai"). */
+      openai?: {
+        /** OpenAI API key (defaults to OPENAI_API_KEY env var). */
+        apiKey?: SecretInput;
+        /** Base URL for API requests (defaults to "https://api.openai.com/v1"). */
+        baseUrl?: string;
+        /** Model to use (defaults to "gpt-5"). */
+        model?: string;
+        /** Responses web search tool type (default: "web_search"). */
+        tool?: "web_search" | "web_search_preview";
+        /** Request `web_search_call.action.sources` from the Responses API (default: false). */
+        includeSources?: boolean;
       };
     };
     fetch?: {

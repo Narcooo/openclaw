@@ -21,7 +21,7 @@ import {
   writeCache,
 } from "./web-shared.js";
 
-const SEARCH_PROVIDERS = ["brave", "perplexity", "grok", "gemini", "kimi"] as const;
+const SEARCH_PROVIDERS = ["brave", "perplexity", "grok", "gemini", "kimi", "openai"] as const;
 const DEFAULT_SEARCH_COUNT = 5;
 const MAX_SEARCH_COUNT = 10;
 
@@ -32,6 +32,10 @@ const XAI_API_ENDPOINT = "https://api.x.ai/v1/responses";
 const DEFAULT_GROK_MODEL = "grok-4-1-fast";
 const DEFAULT_KIMI_BASE_URL = "https://api.moonshot.ai/v1";
 const DEFAULT_KIMI_MODEL = "moonshot-v1-128k";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_MODEL = "gpt-5";
+const DEFAULT_OPENAI_SEARCH_TOOL = "web_search";
+const OPENAI_SOURCES_INCLUDE = "web_search_call.action.sources";
 const KIMI_WEB_SEARCH_TOOL = {
   type: "builtin_function",
   function: { name: "$web_search" },
@@ -265,11 +269,25 @@ type KimiConfig = {
   model?: string;
 };
 
+type OpenAiConfig = {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  tool?: string;
+  includeSources?: boolean;
+};
+
 type GrokSearchResponse = {
   output?: Array<{
     type?: string;
     role?: string;
     text?: string; // present when type === "output_text" (top-level output_text block)
+    action?: {
+      sources?: Array<{
+        type?: string;
+        url?: string;
+      }>;
+    };
     content?: Array<{
       type?: string;
       text?: string;
@@ -376,6 +394,19 @@ function extractGrokContent(data: GrokSearchResponse): {
   return { text, annotationCitations: [] };
 }
 
+function extractResponsesSearchSources(data: GrokSearchResponse): string[] {
+  const sources: string[] = [];
+  for (const output of data.output ?? []) {
+    for (const source of output.action?.sources ?? []) {
+      const url = source.url?.trim();
+      if (url) {
+        sources.push(url);
+      }
+    }
+  }
+  return [...new Set(sources)];
+}
+
 type GeminiConfig = {
   apiKey?: string;
   model?: string;
@@ -475,6 +506,14 @@ function missingSearchKeyPayload(provider: (typeof SEARCH_PROVIDERS)[number]) {
       docs: "https://docs.openclaw.ai/tools/web",
     };
   }
+  if (provider === "openai") {
+    return {
+      error: "missing_openai_api_key",
+      message:
+        "web_search (openai) needs an OpenAI API key. Set OPENAI_API_KEY in the Gateway environment, or configure tools.web.search.openai.apiKey.",
+      docs: "https://docs.openclaw.ai/tools/web",
+    };
+  }
   return {
     error: "missing_brave_api_key",
     message: `web_search needs a Brave Search API key. Run \`${formatCliCommand("openclaw configure --section web")}\` to store it, or set BRAVE_API_KEY in the Gateway environment.`,
@@ -498,6 +537,9 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
   }
   if (raw === "kimi") {
     return "kimi";
+  }
+  if (raw === "openai") {
+    return "openai";
   }
   if (raw === "brave") {
     return "brave";
@@ -672,6 +714,51 @@ function resolveGeminiModel(gemini?: GeminiConfig): string {
   const fromConfig =
     gemini && "model" in gemini && typeof gemini.model === "string" ? gemini.model.trim() : "";
   return fromConfig || DEFAULT_GEMINI_MODEL;
+}
+
+function resolveOpenAiConfig(search?: WebSearchConfig): OpenAiConfig {
+  if (!search || typeof search !== "object") {
+    return {};
+  }
+  const openai = "openai" in search ? search.openai : undefined;
+  if (!openai || typeof openai !== "object") {
+    return {};
+  }
+  return openai as OpenAiConfig;
+}
+
+function resolveOpenAiApiKey(openai?: OpenAiConfig): string | undefined {
+  const fromConfig = normalizeApiKey(openai?.apiKey);
+  if (fromConfig) {
+    return fromConfig;
+  }
+  const fromEnv = normalizeApiKey(process.env.OPENAI_API_KEY);
+  return fromEnv || undefined;
+}
+
+function resolveOpenAiBaseUrl(openai?: OpenAiConfig): string {
+  const fromConfig =
+    openai && "baseUrl" in openai && typeof openai.baseUrl === "string"
+      ? openai.baseUrl.trim()
+      : "";
+  const baseUrl = fromConfig || DEFAULT_OPENAI_BASE_URL;
+  return baseUrl.replace(/\/+$/, "");
+}
+
+function resolveOpenAiModel(openai?: OpenAiConfig): string {
+  const fromConfig =
+    openai && "model" in openai && typeof openai.model === "string" ? openai.model.trim() : "";
+  return fromConfig || DEFAULT_OPENAI_MODEL;
+}
+
+function resolveOpenAiTool(openai?: OpenAiConfig): "web_search" | "web_search_preview" {
+  const fromConfig =
+    openai && "tool" in openai && typeof openai.tool === "string" ? openai.tool.trim() : "";
+  return fromConfig === "web_search_preview" ? "web_search_preview" : "web_search";
+}
+
+function resolveOpenAiIncludeSources(openai?: OpenAiConfig): boolean {
+  return openai?.includeSources === true;
 }
 
 async function withTrustedWebSearchEndpoint<T>(
@@ -1062,6 +1149,68 @@ async function runGrokSearch(params: {
   );
 }
 
+async function runOpenAiSearch(params: {
+  query: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  tool: "web_search" | "web_search_preview";
+  includeSources: boolean;
+  timeoutSeconds: number;
+}): Promise<{
+  content: string;
+  citations: string[];
+  sources?: string[];
+}> {
+  const body: Record<string, unknown> = {
+    model: params.model,
+    input: [
+      {
+        role: "user",
+        content: params.query,
+      },
+    ],
+    tools: [{ type: params.tool }],
+  };
+
+  if (params.includeSources) {
+    body.include = [OPENAI_SOURCES_INCLUDE];
+  }
+
+  const endpoint = params.baseUrl.endsWith("/responses")
+    ? params.baseUrl
+    : `${params.baseUrl}/responses`;
+
+  return withTrustedWebSearchEndpoint(
+    {
+      url: endpoint,
+      timeoutSeconds: params.timeoutSeconds,
+      init: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${params.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      },
+    },
+    async (res) => {
+      if (!res.ok) {
+        return await throwWebSearchApiError(res, "OpenAI");
+      }
+
+      const data = (await res.json()) as GrokSearchResponse;
+      const { text: extractedText, annotationCitations } = extractGrokContent(data);
+      const citations = [...new Set([...(data.citations ?? []), ...annotationCitations])];
+      return {
+        content: extractedText ?? "No response",
+        citations,
+        ...(params.includeSources ? { sources: extractResponsesSearchSources(data) } : {}),
+      };
+    },
+  );
+}
+
 function extractKimiMessageText(message: KimiMessage | undefined): string | undefined {
   const content = message?.content?.trim();
   if (content) {
@@ -1235,6 +1384,10 @@ async function runWebSearch(params: {
   geminiModel?: string;
   kimiBaseUrl?: string;
   kimiModel?: string;
+  openaiBaseUrl?: string;
+  openaiModel?: string;
+  openaiTool?: "web_search" | "web_search_preview";
+  openaiIncludeSources?: boolean;
 }): Promise<Record<string, unknown>> {
   const providerSpecificKey =
     params.provider === "grok"
@@ -1243,7 +1396,9 @@ async function runWebSearch(params: {
         ? (params.geminiModel ?? DEFAULT_GEMINI_MODEL)
         : params.provider === "kimi"
           ? `${params.kimiBaseUrl ?? DEFAULT_KIMI_BASE_URL}:${params.kimiModel ?? DEFAULT_KIMI_MODEL}`
-          : "";
+          : params.provider === "openai"
+            ? `${params.openaiBaseUrl ?? DEFAULT_OPENAI_BASE_URL}:${params.openaiModel ?? DEFAULT_OPENAI_MODEL}:${params.openaiTool ?? DEFAULT_OPENAI_SEARCH_TOOL}:${String(params.openaiIncludeSources ?? false)}`
+            : "";
   const cacheKey = normalizeCacheKey(
     `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || params.language || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}:${params.dateAfter || "default"}:${params.dateBefore || "default"}:${params.searchDomainFilter?.join(",") || "default"}:${params.maxTokens || "default"}:${params.maxTokensPerPage || "default"}:${providerSpecificKey}`,
   );
@@ -1368,6 +1523,37 @@ async function runWebSearch(params: {
     return payload;
   }
 
+  if (params.provider === "openai") {
+    const openaiResult = await runOpenAiSearch({
+      query: params.query,
+      apiKey: params.apiKey,
+      baseUrl: params.openaiBaseUrl ?? DEFAULT_OPENAI_BASE_URL,
+      model: params.openaiModel ?? DEFAULT_OPENAI_MODEL,
+      tool: params.openaiTool ?? DEFAULT_OPENAI_SEARCH_TOOL,
+      includeSources: params.openaiIncludeSources ?? false,
+      timeoutSeconds: params.timeoutSeconds,
+    });
+
+    const payload = {
+      query: params.query,
+      provider: params.provider,
+      model: params.openaiModel ?? DEFAULT_OPENAI_MODEL,
+      tool: params.openaiTool ?? DEFAULT_OPENAI_SEARCH_TOOL,
+      tookMs: Date.now() - start,
+      externalContent: {
+        untrusted: true,
+        source: "web_search",
+        provider: params.provider,
+        wrapped: true,
+      },
+      content: wrapWebContent(openaiResult.content),
+      citations: openaiResult.citations,
+      ...(params.openaiIncludeSources ? { sources: openaiResult.sources ?? [] } : {}),
+    };
+    writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
+    return payload;
+  }
+
   if (params.provider !== "brave") {
     throw new Error("Unsupported web search provider.");
   }
@@ -1465,6 +1651,7 @@ export function createWebSearchTool(options?: {
   const grokConfig = resolveGrokConfig(search);
   const geminiConfig = resolveGeminiConfig(search);
   const kimiConfig = resolveKimiConfig(search);
+  const openaiConfig = resolveOpenAiConfig(search);
 
   const description =
     provider === "perplexity"
@@ -1473,9 +1660,11 @@ export function createWebSearchTool(options?: {
         ? "Search the web using xAI Grok. Returns AI-synthesized answers with citations from real-time web search."
         : provider === "kimi"
           ? "Search the web using Kimi by Moonshot. Returns AI-synthesized answers with citations from native $web_search."
-          : provider === "gemini"
-            ? "Search the web using Gemini with Google Search grounding. Returns AI-synthesized answers with citations from Google Search."
-            : "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and snippets for fast research.";
+          : provider === "openai"
+            ? "Search the web using the OpenAI Responses API web_search tool. Returns AI-synthesized answers with citations from native web search."
+            : provider === "gemini"
+              ? "Search the web using Gemini with Google Search grounding. Returns AI-synthesized answers with citations from Google Search."
+              : "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and snippets for fast research.";
 
   return {
     label: "Web Search",
@@ -1492,9 +1681,11 @@ export function createWebSearchTool(options?: {
             ? resolveGrokApiKey(grokConfig)
             : provider === "kimi"
               ? resolveKimiApiKey(kimiConfig)
-              : provider === "gemini"
-                ? resolveGeminiApiKey(geminiConfig)
-                : resolveSearchApiKey(search);
+              : provider === "openai"
+                ? resolveOpenAiApiKey(openaiConfig)
+                : provider === "gemini"
+                  ? resolveGeminiApiKey(geminiConfig)
+                  : resolveSearchApiKey(search);
 
       if (!apiKey) {
         return jsonResult(missingSearchKeyPayload(provider));
@@ -1660,6 +1851,10 @@ export function createWebSearchTool(options?: {
         geminiModel: resolveGeminiModel(geminiConfig),
         kimiBaseUrl: resolveKimiBaseUrl(kimiConfig),
         kimiModel: resolveKimiModel(kimiConfig),
+        openaiBaseUrl: resolveOpenAiBaseUrl(openaiConfig),
+        openaiModel: resolveOpenAiModel(openaiConfig),
+        openaiTool: resolveOpenAiTool(openaiConfig),
+        openaiIncludeSources: resolveOpenAiIncludeSources(openaiConfig),
       });
       return jsonResult(result);
     },

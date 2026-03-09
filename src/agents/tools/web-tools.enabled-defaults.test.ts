@@ -47,7 +47,31 @@ function createKimiSearchTool(kimiConfig?: { apiKey?: string; baseUrl?: string; 
   });
 }
 
-function createProviderSearchTool(provider: "brave" | "perplexity" | "grok" | "gemini" | "kimi") {
+function createOpenAiSearchTool(openaiConfig?: {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  tool?: string;
+  includeSources?: boolean;
+}) {
+  return createWebSearchTool({
+    config: {
+      tools: {
+        web: {
+          search: {
+            provider: "openai",
+            ...(openaiConfig ? { openai: openaiConfig } : {}),
+          },
+        },
+      },
+    },
+    sandboxed: true,
+  });
+}
+
+function createProviderSearchTool(
+  provider: "brave" | "perplexity" | "grok" | "gemini" | "kimi" | "openai",
+) {
   const searchConfig =
     provider === "perplexity"
       ? { provider, perplexity: { apiKey: "pplx-config-test" } } // pragma: allowlist secret
@@ -55,9 +79,11 @@ function createProviderSearchTool(provider: "brave" | "perplexity" | "grok" | "g
         ? { provider, grok: { apiKey: "xai-config-test" } } // pragma: allowlist secret
         : provider === "gemini"
           ? { provider, gemini: { apiKey: "gemini-config-test" } } // pragma: allowlist secret
-          : provider === "kimi"
-            ? { provider, kimi: { apiKey: "moonshot-config-test" } } // pragma: allowlist secret
-            : { provider, apiKey: "brave-config-test" }; // pragma: allowlist secret
+          : provider === "openai"
+            ? { provider, openai: { apiKey: "openai-config-test", model: "gpt-5.1-codex-mini" } } // pragma: allowlist secret
+            : provider === "kimi"
+              ? { provider, kimi: { apiKey: "moonshot-config-test" } } // pragma: allowlist secret
+              : { provider, apiKey: "brave-config-test" }; // pragma: allowlist secret
   return createWebSearchTool({
     config: {
       tools: {
@@ -93,7 +119,7 @@ function installPerplexitySearchApiFetch(results?: Array<Record<string, unknown>
 }
 
 function createProviderSuccessPayload(
-  provider: "brave" | "perplexity" | "grok" | "gemini" | "kimi",
+  provider: "brave" | "perplexity" | "grok" | "gemini" | "kimi" | "openai",
 ) {
   if (provider === "brave") {
     return { web: { results: [] } };
@@ -110,6 +136,22 @@ function createProviderSuccessPayload(
         {
           content: { parts: [{ text: "ok" }] },
           groundingMetadata: { groundingChunks: [] },
+        },
+      ],
+    };
+  }
+  if (provider === "openai") {
+    return {
+      output: [
+        {
+          type: "message",
+          content: [
+            {
+              type: "output_text",
+              text: "ok",
+              annotations: [{ type: "url_citation", url: "https://example.com/openai" }],
+            },
+          ],
         },
       ],
     };
@@ -242,7 +284,7 @@ describe("web_search provider proxy dispatch", () => {
     global.fetch = priorFetch;
   });
 
-  it.each(["brave", "perplexity", "grok", "gemini", "kimi"] as const)(
+  it.each(["brave", "perplexity", "grok", "gemini", "kimi", "openai"] as const)(
     "uses proxy-aware dispatcher for %s provider when HTTP_PROXY is configured",
     async (provider) => {
       vi.stubEnv("HTTP_PROXY", "http://127.0.0.1:7890");
@@ -258,6 +300,44 @@ describe("web_search provider proxy dispatch", () => {
       expect(requestInit?.dispatcher).toBeInstanceOf(EnvHttpProxyAgent);
     },
   );
+});
+
+describe("web_search openai provider", () => {
+  const priorFetch = global.fetch;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    global.fetch = priorFetch;
+    webSearchTesting.SEARCH_CACHE.clear();
+  });
+
+  it("uses OpenAI Responses web_search tool when provider is openai", async () => {
+    const mockFetch = installMockFetch(createProviderSuccessPayload("openai"));
+    const tool = createOpenAiSearchTool({
+      apiKey: "openai-config-key", // pragma: allowlist secret
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-5.1-codex-mini",
+      tool: "web_search",
+      includeSources: false,
+    });
+
+    const result = await tool?.execute?.("call-1", { query: "test openai search" });
+
+    expect(mockFetch).toHaveBeenCalled();
+    expect(mockFetch.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/responses");
+    expect(parseFirstRequestBody(mockFetch)).toMatchObject({
+      model: "gpt-5.1-codex-mini",
+      input: [{ role: "user", content: "test openai search" }],
+      tools: [{ type: "web_search" }],
+    });
+    expect(result?.details).toMatchObject({
+      provider: "openai",
+      model: "gpt-5.1-codex-mini",
+      tool: "web_search",
+      citations: ["https://example.com/openai"],
+    });
+    expect(result?.content[0]?.text).toContain("ok");
+  });
 });
 
 describe("web_search perplexity Search API", () => {

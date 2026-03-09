@@ -39,6 +39,24 @@ describe("web search provider config", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts openai provider and config", () => {
+    const res = validateConfigObject(
+      buildWebSearchProviderConfig({
+        enabled: true,
+        provider: "openai",
+        providerConfig: {
+          apiKey: "test-key", // pragma: allowlist secret
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-5.1-codex-mini",
+          tool: "web_search",
+          includeSources: false,
+        },
+      }),
+    );
+
+    expect(res.ok).toBe(true);
+  });
+
   it("accepts gemini provider with no extra config", () => {
     const res = validateConfigObject(
       buildWebSearchProviderConfig({
@@ -131,5 +149,13 @@ describe("web search provider auto-detection", () => {
         typeof resolveSearchProvider
       >[0]),
     ).toBe("gemini");
+  });
+
+  it("respects explicit openai provider selection", () => {
+    expect(
+      resolveSearchProvider({ provider: "openai" } as unknown as Parameters<
+        typeof resolveSearchProvider
+      >[0]),
+    ).toBe("openai");
   });
 });
