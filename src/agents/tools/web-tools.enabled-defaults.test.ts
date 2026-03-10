@@ -353,6 +353,7 @@ describe("web_search openai provider", () => {
     expect(parseFirstRequestBody(mockFetch)).toMatchObject({
       model: "gpt-5.1-codex-mini",
       input: [{ role: "user", content: "test openai search" }],
+      stream: true,
       tools: [{ type: "web_search" }],
     });
     expect(result?.details).toMatchObject({

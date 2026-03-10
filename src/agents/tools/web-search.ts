@@ -1253,6 +1253,7 @@ async function runOpenAiSearch(params: {
       },
     ],
     tools: [{ type: params.tool }],
+    stream: true,
   };
 
   if (params.includeSources) {
